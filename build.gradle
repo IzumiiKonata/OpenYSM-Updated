@@ -1,6 +1,10 @@
 plugins {
-    id 'dev.architectury.loom' version '1.14-SNAPSHOT' apply false
-    id 'architectury-plugin' version '3.4-SNAPSHOT'
+    // 1.17 线与 TLM Tsumugi fork 的 fabric-loom 1.17.14 同代——低于它无法消费 libs/ 里的 TLM jar
+    // （loom 拒绝处理由更新版 loom 构建的 mod）。钉住具体版本以保证可复现。
+    id 'dev.architectury.loom' version '1.17.487' apply false
+    // 3.4 线配 loom 1.17 会炸（RunConfig NoClassDefFound / compileClasspath 声明违规），
+    // 3.5 线才是 loom 1.17 的配对版本。
+    id 'architectury-plugin' version '3.5-SNAPSHOT'
     id 'com.gradleup.shadow' version '9.2.2' apply false
 }
 
