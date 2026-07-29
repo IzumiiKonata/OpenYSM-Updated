@@ -22,12 +22,17 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
+import net.minecraft.client.renderer.entity.state.EntityRenderState;
+import net.minecraft.client.renderer.state.CameraRenderState;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.core.NonNullList;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.*;
+import net.minecraft.world.entity.EntityAttachment;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Blocks;
 import org.joml.Matrix4fStack;
@@ -485,6 +490,10 @@ public final class ModelPreviewRenderer {
         float poseYOffset = 0.0F;
         if (tracker.isCurrentAnimation("sleep")) {
             newPose = Pose.SLEEPING;
+            // 人物要躺在**床面**上，而不是草地上。床高 9/16 = 0.5625
+            // （与 BedRenderer.preparePose 里那个 0.5625 是同一个量）。
+            // 与载具同理：内层坐标系里地面顶面是 y=0，故直接抬高一个床高即可。
+            poseYOffset = 0.5625F;
         } else if (tracker.isCurrentAnimation("swim") || tracker.isCurrentAnimation("swim_stand")) {
             newPose = Pose.SWIMMING;
         } else if (tracker.isCurrentAnimation("sneak") || tracker.isCurrentAnimation("sneaking")) {
@@ -518,6 +527,8 @@ public final class ModelPreviewRenderer {
         final boolean wantHorse = tracker.isCurrentAnimation("ride");
         final boolean wantPig = tracker.isCurrentAnimation("ride_pig");
         final boolean wantBoat = tracker.isCurrentAnimation("boat");
+        // 布景（载具/床/地面）一律**不继承**人物的动画偏移：它们都是「地面上的物件」，
+        // 而 poseYOffset 描述的是人物相对地面的高度。两者互不影响。
         PreviewEntityRegistry.SceneryRenderer scenery = null;
         if (wantGround || wantBed || wantHorse || wantPig || wantBoat) {
             scenery = (poseStack, bufferSource, packedLight) -> {
@@ -537,8 +548,8 @@ public final class ModelPreviewRenderer {
             };
         }
 
-        if (scenery != null) {
-            PreviewEntityRegistry.register(state, animatable, scenery, null);
+        if (scenery != null || poseYOffset != 0.0f) {
+            PreviewEntityRegistry.register(state, animatable, scenery, null, poseYOffset);
         } else {
             PreviewEntityRegistry.register(state, animatable);
         }
@@ -551,7 +562,11 @@ public final class ModelPreviewRenderer {
         float rectCenterX = (x0 + x1) / 2.0F;
         float rectCenterY = (y0 + y1) / 2.0F;
         float translationX = (anchorX - rectCenterX) / submitScale;
-        float translationY = (anchorY - rectCenterY) / submitScale + 0.8F + poseYOffset;
+        // 注意：**不要**把 poseYOffset 加进来。基准只有 0.8 那一项在旋转之前，
+        // 动画偏移是在 mulPose(rotationZ) 之后施加的；而 GuiEntityRenderer 是
+        // 「先 translate 再 mulPose」，折进这里会被 rotateZ(180°) 取反并掺入 Z 分量。
+        // poseYOffset 改由 GuiEntityRendererMixin 在内层坐标系施加，见 PreviewEntityRegistry.Entry。
+        float translationY = (anchorY - rectCenterY) / submitScale + 0.8F;
         if (wantBed) {
             state.bodyRot = yaw - 90;
         }
@@ -587,12 +602,45 @@ public final class ModelPreviewRenderer {
     }
 
     private static void renderBedScenery(PoseStack poseStack, MultiBufferSource bufferSource, int packedLight, float yaw) {
-        net.minecraft.client.renderer.block.BlockRenderDispatcher blockRenderer = Minecraft.getInstance().getBlockRenderer();
+        // 床画不出来的成因：床的**方块模型是空的**——assets/minecraft/models/block/bed.json 里
+        // 只有一个 particle 贴图，没有任何 elements 几何（已在 1.21.11 的 jar 里实证）。
+        // 所以 renderSingleBlock 对床是彻底的空操作，与 render shape 无关
+        // （1.21.11 的 RenderShape 只剩 INVISIBLE / MODEL，床走的是 MODEL）。
+        // 床的真实几何在 BedRenderer 里，对外经 BedSpecialRenderer 暴露，
+        // 由 SpecialBlockModelRenderer.renderByBlock 提交——这正是 README「已知问题」里
+        // sleep 那一半的成因，且它在 1.20.1 基准上同样存在（基准也是 renderSingleBlock）。
+        SubmitNodeCollector collector = RenderContext.collector();
+        if (collector == null) {
+            return;
+        }
         poseStack.pushPose();
         poseStack.mulPose(Axis.YP.rotationDegrees(yaw + 180.0f));
         poseStack.translate(-0.5d, 0.0d, 0.5d);
-        blockRenderer.renderSingleBlock(Blocks.RED_BED.defaultBlockState(), poseStack, bufferSource, packedLight, OverlayTexture.NO_OVERLAY);
+        // 末三个 int 依次是 light / overlay / color（字节码实证：renderByBlock 转发给
+        // SpecialModelRenderer.submit(data, ctx, pose, collector, light, overlay, glint=false, color)）。
+        Minecraft.getInstance().getModelManager().specialBlockModelRenderer().renderByBlock(
+                Blocks.RED_BED,
+                ItemDisplayContext.NONE,
+                poseStack,
+                collector,
+                packedLight,
+                OverlayTexture.NO_OVERLAY,
+                -1);
         poseStack.popPose();
+    }
+
+    /** 取（并缓存）用于预览摆拍的载具实体；拿不到就返回 null，调用方自行降级。 */
+    @org.jetbrains.annotations.Nullable
+    private static Entity cachedVehicle(LivingEntity rider, EntityType<? extends Entity> vehicleType) {
+        if (rider.level() == null) {
+            return null;
+        }
+        try {
+            return AnimatableCacheUtil.ENTITIES_CACHE.get(EntityType.getKey(vehicleType),
+                    () -> vehicleType.create(rider.level(), EntitySpawnReason.LOAD));
+        } catch (java.util.concurrent.ExecutionException e) {
+            return null;
+        }
     }
 
     private static void renderVehicleScenery(
@@ -604,22 +652,45 @@ public final class ModelPreviewRenderer {
             LivingEntity rider,
             EntityType<? extends Entity> vehicleType
     ) {
-        if (rider.level() == null) {
-            return;
-        }
-        Entity vehicle;
-        try {
-            vehicle = AnimatableCacheUtil.ENTITIES_CACHE.get(EntityType.getKey(vehicleType), () -> vehicleType.create(rider.level(), EntitySpawnReason.LOAD));
-        } catch (java.util.concurrent.ExecutionException e) {
-            return;
-        }
+        Entity vehicle = cachedVehicle(rider, vehicleType);
         if (vehicle == null) {
+            return;
+        }
+        // 1.21.11 起 GUI 里的实体渲染改走 submit / 渲染图，没有方块那样的立即模式接口
+        // （床与地面能活下来正是因为 renderSingleBlock 仍是立即模式）。所需的
+        // SubmitNodeCollector 与 CameraRenderState 由 GuiEntityRendererMixin 在调用本回调
+        // **之前**经 RenderContext.enter(...) 放好，这里取出来即可，无需改 SceneryRenderer 接口。
+        SubmitNodeCollector collector = RenderContext.collector();
+        CameraRenderState cameraState = RenderContext.camera();
+        if (collector == null || cameraState == null) {
             return;
         }
         EntityRenderDispatcher dispatcher = Minecraft.getInstance().getEntityRenderDispatcher();
         poseStack.pushPose();
         poseStack.mulPose(Axis.YP.rotationDegrees(yaw));
-        double yOffset = -(vehicle.getPassengerRidingPosition(rider).y - vehicle.getY());
+        // 基准（Forge 1.20.1 的 OpenYSM/OpenYSM）把偏移作为 render(...) 的 y 实参传入，值 =
+        // (-vehicle.getPassengersRidingOffset()) - rider.getMyRidingOffset()。1.21.11 的
+        // getPassengerRidingPosition 已把这两项合并——本仓 renderVehicleModel 用的就是同一映射。
+        // submit(...) 的 x/y/z 同样被加上 getRenderOffset 后 translate 进 poseStack（字节码实证），
+        // 与基准的 render(...) 语义一致，故照样按实参传，不要改成 poseStack.translate。
+        // 载具直接落在地面：内层坐标系里地面顶面正好是 y=0
+        // （renderGroundScenery 的方块占 [-1,0]），且本回调**不继承人物的动画偏移**，
+        // 所以传 0 即可。
+        //
+        // ⚠️ 勿改成「按座高摆放」。座高（getPassengerRidingPosition / PASSENGER 挂点，
+        // 马 1.44375、猪 0.86875、船 0.1875）是**原版骑乘**的挂点语义；而预览里人物播的是
+        // 模型作者做的坐姿动画，重心与原版挂点不是一回事。2026-07-29 实测：
+        // 用座高决定人物高度，三种载具的人物一律**浮在载具上方**。
+        // 人物高度归 poseYOffset（基准常量）管，载具只管落地，两者不要互相推导。
+        double yOffset = 0.0d;
+        EntityRenderState vehicleState = dispatcher.extractEntity(vehicle, partialTick);
+        // 等价基准写死的 15728880（全亮）；packedLight 由 submitTexturePreview 设为 FULL_BRIGHT。
+        vehicleState.lightCoords = packedLight;
+        // 等价基准在预览前后成对调用的 setRenderShadow(false/true)。1.21.11 把阴影搬进了渲染态，
+        // 而 submit 的判据是 shadowPieces.isEmpty()——只清半径不生效，必须清空列表。
+        vehicleState.shadowRadius = 0.0f;
+        vehicleState.shadowPieces.clear();
+        dispatcher.submit(vehicleState, cameraState, 0.0d, yOffset, 0.0d, poseStack, collector);
         poseStack.popPose();
     }
 }

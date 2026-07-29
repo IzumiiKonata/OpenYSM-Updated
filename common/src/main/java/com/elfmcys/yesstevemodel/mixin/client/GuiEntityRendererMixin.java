@@ -55,12 +55,18 @@ public class GuiEntityRendererMixin {
                 MultiBufferSource.BufferSource bufferSource = Minecraft.getInstance().renderBuffers().bufferSource();
                 RenderContext.enter(collector, cameraState);
                 try {
+                    // 布景（载具/床/地面）落在地面，不继承 poseYOffset。
                     if (entry.beforeEntity() != null) {
                         entry.beforeEntity().render(poseStack, bufferSource, state.lightCoords);
                     }
                     CustomPlayerRenderer renderer = RendererManager.getPlayerRenderer();
                     float framePartialTick = Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+                    // 动画偏移只作用于人物，且必须施加在**这里**——旋转之后的内层坐标系，
+                    // 与基准（mulPose(rotationZ) 之后才 translate）一致。
+                    poseStack.pushPose();
+                    poseStack.translate(0.0d, entry.poseYOffset(), 0.0d);
                     renderer.renderEntity(entry.animatable(), playerState, 0.0f, framePartialTick, poseStack, bufferSource, state.lightCoords);
+                    poseStack.popPose();
                     if (entry.afterEntity() != null) {
                         entry.afterEntity().render(poseStack, bufferSource, state.lightCoords);
                     }

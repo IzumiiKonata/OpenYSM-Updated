@@ -16,10 +16,20 @@ public final class PreviewEntityRegistry {
         void render(PoseStack poseStack, MultiBufferSource bufferSource, int packedLight);
     }
 
+    /**
+     * @param beforeEntity 布景（载具、床、地面）。**不**继承 poseYOffset：它们都是
+     *                     「地面上的物件」，而 poseYOffset 描述人物相对地面的高度。
+     * @param poseYOffset  人物的动画偏移，**必须在旋转之后的内层坐标系里施加**。
+     *                     基准是 {@code mulPose(rotationZ)} 之后才 translate 的；
+     *                     而 GuiEntityRenderer 是「先 translate 再 mulPose」，
+     *                     把它折进外层 translation 会因 {@code rotateZ(180°)} 把 Y 取反、
+     *                     并被 cameraTilt 掺进一个 Z 分量——取任何数值都不可能等价。
+     */
     public record Entry(
             CustomPlayerEntity animatable,
             @Nullable SceneryRenderer beforeEntity,
-            @Nullable SceneryRenderer afterEntity
+            @Nullable SceneryRenderer afterEntity,
+            float poseYOffset
     ) {
     }
 
@@ -29,7 +39,7 @@ public final class PreviewEntityRegistry {
     }
 
     public static void register(EntityRenderState state, CustomPlayerEntity animatable) {
-        ENTRIES.put(state, new Entry(animatable, null, null));
+        ENTRIES.put(state, new Entry(animatable, null, null, 0.0f));
     }
 
     public static void register(
@@ -38,7 +48,17 @@ public final class PreviewEntityRegistry {
             @Nullable SceneryRenderer beforeEntity,
             @Nullable SceneryRenderer afterEntity
     ) {
-        ENTRIES.put(state, new Entry(animatable, beforeEntity, afterEntity));
+        ENTRIES.put(state, new Entry(animatable, beforeEntity, afterEntity, 0.0f));
+    }
+
+    public static void register(
+            EntityRenderState state,
+            CustomPlayerEntity animatable,
+            @Nullable SceneryRenderer beforeEntity,
+            @Nullable SceneryRenderer afterEntity,
+            float poseYOffset
+    ) {
+        ENTRIES.put(state, new Entry(animatable, beforeEntity, afterEntity, poseYOffset));
     }
 
     @Deprecated
