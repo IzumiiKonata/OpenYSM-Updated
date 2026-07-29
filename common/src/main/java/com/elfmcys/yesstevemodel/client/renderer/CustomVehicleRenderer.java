@@ -14,6 +14,19 @@ import net.minecraft.world.phys.Vec3;
 import rip.ysm.api.entity.EntityDataBridge;
 
 public class CustomVehicleRenderer {
+    /**
+     * 该实体是否真有一套可渲染的 YSM 载具模型。
+     * <p>
+     * 与 {@link #renderVehicle} 内部的判据同源（组件在场 + 模型已初始化且就绪），单独抽出来供
+     * 调用方在**产生任何副作用之前**先问一次——{@code EntityRenderDispatcherMixin} 依赖它，
+     * 否则会对每个实体都覆写一次调用方的 render state。两处判据必须同步修改。
+     */
+    public static boolean hasReadyVehicleModel(Entity entity) {
+        return VehicleCapability.get(entity)
+                .map(cap -> cap.isModelInitialized() && cap.isModelReady())
+                .orElse(false);
+    }
+
     public static boolean renderVehicle(Entity entity, EntityRenderState state, float yaw, float partialTick, PoseStack poseStack, MultiBufferSource bufferSource, int packedLight) {
         return VehicleCapability.get(entity).map(cap -> {
             if (cap.isModelInitialized() && cap.isModelReady()) {
